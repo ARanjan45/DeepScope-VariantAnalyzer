@@ -1,4 +1,4 @@
-# DeepScope — Variant Analysis
+# DeepScope - Genomic and Chromosomal Variant Analysis
 
 > **AI-powered genomic variant effect prediction using the EVO2 deep learning model**
 
@@ -126,7 +126,7 @@ flowchart LR
 ### Frontend
 | Technology | Purpose |
 |---|---|
-| Next.js 15 | React framework |
+| Next.js 16 | React framework |
 | TypeScript | Type safety |
 | Tailwind CSS | Styling |
 | Shadcn UI | Component library |
