@@ -1,101 +1,236 @@
-![alt text](thumbnail.png)
+# DeepScope — Variant Analysis
 
-[Link to video](https://youtu.be/3dCZxmd5bvs)
+> **AI-powered genomic variant effect prediction using the EVO2 deep learning model**
 
-[Discord and more](https://www.andreastrolle.com/)
+DeepScope is a full-stack biotech web application that predicts the pathogenicity of single nucleotide variants (SNVs) in human DNA. It leverages the state-of-the-art **EVO2 7B genomic language model** deployed on serverless H100 GPUs via Modal, combined with a modern Next.js frontend for an intuitive research experience.
 
-## Overview
+---
 
-Hi 🤙 In this project, you'll build a web app that can classify how likely specific mutations in DNA are to cause diseases (variant effect prediction). We will deploy and use the state-of-the-art Evo2 large language model, and use it to predict the pathogenicity of single nucleotide variants (SNVs). You'll deploy a Python backend on an H100 serverless GPU with Modal, exposing a FastAPI endpoint for analysis. After deploying the backend, you'll build a web app around it where users can select a genome assembly, browse its chromosomes or search for specific genes like BRCA1, and view the gene's reference genome sequence. The user can input a mutation in the gene and predict its pathogenicity with AI, but the user can also pick from a list of existing known variations, and compare the Evo2 prediction (pathogenic/benign) against existing ClinVar classifications. The web app is built with Next.js, React, TypeScript, Tailwind CSS, and Shadcn UI and is based off of the T3 Stack. You'll be able to build along with me from start to finish.
+## 👥 Team
 
-Everything (including GPU's) is free, and no biological background is needed, since I'll walk you through all the theory needed.
+| Name | Role |
+|------|------|
+| **Aprajita Ranjan** | AI/ML Engineer — EVO2 Model Integration, GPU Backend Architecture & Modal Deployment |
+| **Priyanshu Paul** | Full-Stack Engineer — Frontend Development, API Integration & Data Pipeline |
 
-TL;DR / Simpler Version\
-DNA is like a long code made of A, T, G, and C. Small changes (mutations) in specific parts of this code, like in genes responsible for preventing cancer, can increase a person's risk of developing the disease. For instance, if an 'A' appears where a 'T' should be at a particular spot, that's a mutation. These changes can vary in how harmful they are, and we'll build a tool to analyze these different variations' harmfulness.
+---
 
-Features:
+## 🧬 What is DeepScope?
 
-- 🧬 Evo2 model for variant effect prediction
-- 🩺 Predict pathogenicity of single nucleotide variants (pathogenic/benign)
-- ⚖️ Comparison view for existing ClinVar classification vs. Evo2 prediction
-- 💯 Prediction confidence estimation
-- 🌍 Genome assembly selector (e.g., hg38)
-- 🗺️ Select genes from chromosome browsing or searching (e.g., BRCA1)
-- 🌐 See full reference genome sequence (UCSC API)
-- 🧬 Explore gene and variants data (NCBI ClinVar/E-utilities)
-- 💻 Python backend deployed with Modal
-- 🚀 FastAPI endpoint for variant analysis requests
-- ⚡ GPU-accelerated (H100) variant scoring via Modal
-- 📱 Responsive Next.js web interface
-- 🎨 Modern UI with Tailwind CSS & Shadcn UI
+DNA is composed of four nucleotide bases: **A**, **T**, **G**, and **C**. Small changes (mutations) at specific positions — called **Single Nucleotide Variants (SNVs)** — can have varying impacts on human health. For example, a single base change in the BRCA1 gene can significantly increase cancer risk.
 
-## Evo2 Model
+DeepScope uses the EVO2 genomic language model to score the **log-likelihood delta** between a reference sequence and a mutated sequence, classifying variants as:
+- 🔴 **Likely Pathogenic** — variant reduces genomic fitness
+- 🟢 **Likely Benign** — variant has minimal impact
 
-Check out the paper behind the model.
+---
 
-- [Paper](https://www.biorxiv.org/content/10.1101/2025.02.18.638918v1)
-- [GitHub Repository](https://github.com/ArcInstitute/evo2)
+## ✨ Features
 
-## Setup
+- 🧬 **EVO2 7B Model** — state-of-the-art DNA language model for variant effect prediction
+- 🩺 **SNV Pathogenicity Prediction** — classify variants as pathogenic or benign with confidence scores
+- ⚖️ **ClinVar Comparison** — compare EVO2 predictions against existing clinical classifications
+- 💯 **Confidence Estimation** — quantified prediction confidence using ROC-derived thresholds
+- 🌍 **Genome Assembly Selector** — supports hg38 and other UCSC assemblies
+- 🗺️ **Gene Browser** — browse by chromosome or search genes (e.g., BRCA1, BRAF)
+- 🌐 **Live Reference Sequences** — fetched in real-time from UCSC Genome Browser API
+- 🔬 **Known Variant Explorer** — powered by NCBI ClinVar / E-utilities API
+- ⚡ **H100 GPU Acceleration** — serverless GPU inference via Modal
+- 📱 **Responsive Interface** — modern UI built with Tailwind CSS and Shadcn UI
 
-Follow these steps to install and set up the project.
+---
 
-### Clone the Repository
+## 🏗️ System Architecture
 
-```bash
-git clone --recurse-submodules https://github.com/Andreaswt/variant-analysis-evo2.git
+```mermaid
+graph TB
+    subgraph Client["🌐 Client Browser"]
+        UI["Next.js Frontend\n(Vercel)"]
+    end
+
+    subgraph APIs["🔌 External Public APIs"]
+        UCSC["UCSC Genome Browser API\nReference Sequences"]
+        NCBI["NCBI ClinVar API\nKnown Variants"]
+        CLINVT["NLM Clinical Tables API\nGene Search"]
+    end
+
+    subgraph NextServer["⚙️ Next.js Server (Vercel)"]
+        PROXY["/api/analyze\nProxy Route"]
+        ENV["Server-side\nEnv Variables"]
+    end
+
+    subgraph Modal["☁️ Modal Cloud Infrastructure"]
+        FASTAPI["FastAPI Endpoint\nanalyze_single_variant"]
+        subgraph Container["H100 GPU Container"]
+            EVO2["EVO2 7B Model\n(Loaded in GPU Memory)"]
+            SCORER["Sequence Scorer\nscore_sequences()"]
+        end
+        VOLUME["Modal Volume\nhf_cache\n(15GB Model Weights)"]
+    end
+
+    subgraph HF["🤗 HuggingFace"]
+        WEIGHTS["arcinstitute/evo2_7b\nModel Weights"]
+    end
+
+    UI -->|"Gene Search\nChromosome Browse"| CLINVT
+    UI -->|"Reference Sequence\nFetch"| UCSC
+    UI -->|"Known Variants\nFetch"| NCBI
+    UI -->|"POST /api/analyze\n(same origin)"| PROXY
+    PROXY -->|"POST with JSON body\nvariant_position, alternative\ngenome, chromosome"| FASTAPI
+    FASTAPI -->|"Fetch 8192bp\nwindow"| UCSC
+    FASTAPI --> EVO2
+    EVO2 --> SCORER
+    SCORER -->|"delta_score\nprediction\nconfidence"| FASTAPI
+    FASTAPI -->|"JSON Result"| PROXY
+    PROXY -->|"JSON Result"| UI
+    VOLUME <-->|"Cache/Load\nWeights"| Container
+    WEIGHTS -->|"First run only\n~15GB download"| VOLUME
 ```
 
-### Install Python
+---
 
-Download and install Python if not already installed. Use the link below for guidance on installation:
-[Python Download](https://www.python.org/downloads/)
+## 🔄 Analysis Pipeline
 
-Create a virtual environment for each folder, except elevenlabs-clone-frontend, with **Python 3.10**.
+```mermaid
+flowchart LR
+    A["👤 User Input\nGene + Position\n+ Alternative Base"] --> B["Fetch Reference\nSequence\nUCSC API"]
+    B --> C["Extract 8192bp\nWindow Around\nVariant Position"]
+    C --> D["Build Reference\nSequence Window\nref_seq"]
+    C --> E["Build Variant\nSequence Window\nvar_seq"]
+    D --> F["EVO2 7B\nScore Reference\nlog P ref"]
+    E --> G["EVO2 7B\nScore Variant\nlog P var"]
+    F --> H["Calculate\nDelta Score\nΔ = var - ref"]
+    G --> H
+    H --> I{"Δ < threshold\n-0.000918?"}
+    I -->|"Yes"| J["🔴 Likely\nPathogenic"]
+    I -->|"No"| K["🟢 Likely\nBenign"]
+    J --> L["Calculate\nConfidence\nScore"]
+    K --> L
+    L --> M["Return Result\nto User"]
+```
+
+---
+
+## 🛠️ Tech Stack
 
 ### Backend
+| Technology | Purpose |
+|---|---|
+| Python 3.12 | Core language |
+| Modal | Serverless GPU deployment |
+| FastAPI | REST API framework |
+| EVO2 7B | Genomic language model |
+| H100 GPU | Hardware accelerator |
+| HuggingFace Hub | Model weight hosting |
 
-Navigate to backend folder:
+### Frontend
+| Technology | Purpose |
+|---|---|
+| Next.js 15 | React framework |
+| TypeScript | Type safety |
+| Tailwind CSS | Styling |
+| Shadcn UI | Component library |
+| T3 Stack | Project scaffold |
+| Vercel | Frontend hosting |
+
+### External APIs
+| API | Data Provided |
+|---|---|
+| UCSC Genome Browser | Reference genome sequences |
+| NCBI ClinVar / E-utilities | Known variant classifications |
+| NLM Clinical Tables | Gene search |
+
+---
+
+## 🚀 Setup & Deployment
+
+### Prerequisites
+- Python 3.12
+- Node.js 20+
+- Modal account (free) — https://modal.com
+- HuggingFace account (free) — https://huggingface.co
+
+### Backend Setup
 
 ```bash
 cd evo2-backend
-```
-
-Install dependencies:
-
-```bash
+python -m venv venv
+.\venv\Scripts\activate        # Windows
+source venv/bin/activate       # Mac/Linux
 pip install -r requirements.txt
+modal setup                    # Authenticate with Modal
+modal run main.py              # Test run
+modal deploy main.py           # Deploy to production
 ```
 
-Modal setup:
-
-```bash
-modal setup
-```
-
-Run on Modal:
-
-```bash
-modal run main.py
-```
-
-Deploy backend:
-
-```bash
-modal deploy main.py
-```
-
-### Frontend
-
-Install dependencies:
+### Frontend Setup
 
 ```bash
 cd evo2-frontend
-npm i
+npm install
+cp .env.example .env
+# Edit .env and add your Modal deployment URL
+npm run dev                    # Development server
 ```
 
-Run:
+### Environment Variables
 
-```bash
-npm run dev
+```env
+# evo2-frontend/.env
+BACKEND_URL=https://your-username--genome-analysis-v2-evo2model-analyze-single-variant.modal.run
+NEXT_PUBLIC_ANALYZE_SINGLE_VARIANT_BASE_URL=/api/analyze
 ```
+
+---
+
+## 📁 Project Structure
+
+```
+deepscope/
+├── evo2-backend/
+│   ├── evo2/                  # EVO2 model submodule
+│   ├── main.py                # Modal app + FastAPI endpoint
+│   └── requirements.txt       # Python dependencies
+├── evo2-frontend/
+│   ├── src/
+│   │   ├── app/
+│   │   │   ├── api/analyze/   # Backend proxy route
+│   │   │   ├── layout.tsx
+│   │   │   └── page.tsx
+│   │   ├── components/        # React components
+│   │   │   ├── gene-information.tsx
+│   │   │   ├── gene-sequence.tsx
+│   │   │   ├── gene-viewer.tsx
+│   │   │   ├── known-variants.tsx
+│   │   │   ├── variant-analysis.tsx
+│   │   │   └── variant-comparison-modal.tsx
+│   │   └── utils/
+│   │       └── genome-api.ts  # All API calls
+│   └── package.json
+├── evo2.excalidraw             # Architecture diagram
+└── README.md
+```
+
+---
+
+## 🧪 How to Use
+
+1. **Select Genome Assembly** — choose `hg38` (human genome, latest)
+2. **Find a Gene** — search by name (e.g., `BRCA1`) or browse by chromosome
+3. **View Reference Sequence** — the gene's DNA sequence is fetched live
+4. **Enter a Variant** — input a genomic position and alternative base (e.g., A→G)
+5. **Analyze** — DeepScope calls EVO2 and returns a pathogenicity prediction
+6. **Compare** — view side-by-side comparison with ClinVar clinical classifications
+
+---
+
+## 📊 Model Details
+
+**EVO2 7B** is a genomic language model trained on 8.8 trillion tokens from all domains of life using the StripedHyena 2 architecture.
+
+- **Variant Scoring Method**: Log-likelihood delta (Δ = log P(variant) − log P(reference))
+- **Classification Threshold**: −0.0009178519 (derived from BRCA1 ROC analysis)
+- **Context Window**: 8,192 base pairs around the variant position
+- **Confidence**: Normalized distance from threshold using class-specific standard deviations
+
+---

@@ -1,214 +1,250 @@
-# Evo 2: Genome modeling and design across all domains of life
+# DeepScope — Backend
 
-![Evo 2](evo2.jpg)
+> EVO2 Model Deployment & FastAPI Inference Engine
 
-Evo 2 is a state of the art DNA language model for long context modeling and design. Evo 2 models DNA sequences at single-nucleotide resolution at up to 1 million base pair context length using the [StripedHyena 2](https://github.com/Zymrael/savanna/blob/main/paper.pdf) architecture. Evo 2 was pretrained using [Savanna](https://github.com/Zymrael/savanna). Evo 2 was trained autoregressively on [OpenGenome2](https://huggingface.co/datasets/arcinstitute/opengenome2), a dataset containing 8.8 trillion tokens from all domains of life.
+This is the backend for DeepScope. It deploys the **EVO2 7B genomic language model** on a serverless **H100 GPU** using [Modal](https://modal.com), exposing a FastAPI endpoint for variant effect prediction.
 
-We describe Evo 2 in the preprint:
-["Genome modeling and design across all domains of life with Evo 2"](https://www.biorxiv.org/content/10.1101/2025.02.18.638918v1).
+**Built by: Aprajita Ranjan** — AI/ML Engineer, EVO2 Model Integration & Modal Deployment
 
-## Contents
+---
 
-- [Setup](#setup)
-  - [Requirements](#requirements)
-  - [Installation](#installation)
-- [Checkpoints](#checkpoints)
-- [Usage](#usage)
-  - [Forward](#forward)
-  - [Embeddings](#embeddings)
-  - [Generation](#generation)
-  - [Notebooks](#notebooks)
-  - [Nvidia NIM](#nvidia-nim)
-- [Dataset](#dataset)
-- [Training and Finetuning](#training-and-finetuning)
-- [Citation](#citation)
+## 🏗️ Backend Architecture
 
-## Setup
+```mermaid
+graph TB
+    subgraph Modal["☁️ Modal Cloud"]
+        subgraph Image["🐳 Container Image"]
+            CUDA["CUDA 12.8 Base\n+ Python 3.12"]
+            TORCH["PyTorch 2.7.1\n(cu128)"]
+            FA["flash-attn 2.8.0"]
+            EVO2PKG["evo2 package\n(PyPI)"]
+        end
 
-This repo is for running Evo 2 locally for inference or generation, using our [Vortex](https://github.com/Zymrael/vortex) inference code. For training and finetuning, see the section [here](#training-and-finetuning).
-You can run Evo 2 without any installation using the [Nvidia Hosted API](https://build.nvidia.com/arc/evo2-40b).
-You can also self-host an instance using Nvidia NIM. See the [Nvidia NIM](#nvidia-nim) section for more 
-information.
+        subgraph App["genome-analysis App"]
+            ENDPOINT["@modal.fastapi_endpoint\nPOST /\nanalyze_single_variant"]
+
+            subgraph Cls["Evo2Model Class\n@app.cls(gpu=H100)"]
+                ENTER["@modal.enter()\nload_evo2_model()\nRuns once on cold start"]
+                MODEL["EVO2 7B\nIn GPU Memory"]
+                ANALYZE["analyze_single_variant()\nRuns per request"]
+            end
+        end
+
+        VOLUME["Modal Volume\nhf_cache\n/root/.cache/huggingface\n~15GB cached weights"]
+        SECRET["Modal Secret\nhuggingface-secret\nHF_TOKEN"]
+    end
+
+    subgraph HF["🤗 HuggingFace"]
+        WEIGHTS["arcinstitute/evo2_7b"]
+    end
+
+    subgraph UCSC["🌐 UCSC API"]
+        SEQ["Reference Genome\nSequence Data"]
+    end
+
+    REQUEST["POST Request\n{variant_position,\nalternative,\ngenome,\nchromosome}"] --> ENDPOINT
+    ENDPOINT --> ANALYZE
+    ANALYZE -->|"Fetch 8192bp window"| SEQ
+    ANALYZE --> MODEL
+    ENTER --> MODEL
+    MODEL <-->|"Load/Use"| VOLUME
+    VOLUME <-->|"First run: download"| WEIGHTS
+    SECRET --> Cls
+    ANALYZE -->|"JSON Response\n{prediction, delta_score,\nconfidence}"| REQUEST
+```
+
+---
+
+## 🔄 Inference Pipeline
+
+```mermaid
+sequenceDiagram
+    participant F as Frontend Proxy
+    participant E as FastAPI Endpoint
+    participant U as UCSC API
+    participant M as EVO2 Model (H100)
+
+    F->>E: POST {variant_position, alternative, genome, chromosome}
+    E->>U: GET sequence window (8192bp around position)
+    U-->>E: Reference DNA sequence
+    E->>E: Extract relative position in window
+    E->>E: Build var_seq (swap base at position)
+    E->>M: score_sequences([ref_seq])
+    M-->>E: ref_log_likelihood
+    E->>M: score_sequences([var_seq])
+    M-->>E: var_log_likelihood
+    E->>E: delta = var_score - ref_score
+    E->>E: Compare delta to threshold (-0.000918)
+    E->>E: Calculate confidence score
+    E-->>F: {prediction, delta_score, confidence, reference, alternative, position}
+```
+
+---
+
+## 📁 File Structure
+
+```
+evo2-backend/
+├── evo2/                    # ArcInstitute EVO2 git submodule
+│   ├── evo2/                # Core model code
+│   ├── notebooks/           # BRCA1 analysis notebooks
+│   └── pyproject.toml
+├── main.py                  # Modal app definition + FastAPI endpoint
+└── requirements.txt         # Python dependencies
+```
+
+---
+
+## 🧠 main.py — Key Components
+
+### 1. Container Image Definition
+```python
+evo2_image = (
+    modal.Image.from_registry("nvidia/cuda:12.8.0-devel-ubuntu22.04", add_python="3.12")
+    .run_commands("pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128")
+    .run_commands("pip install flash-attn==2.8.0.post2 --no-build-isolation")
+    .run_commands("pip install evo2")
+    ...
+)
+```
+
+### 2. EVO2Model Class (H100 GPU)
+```python
+@app.cls(gpu="H100", volumes={mount_path: volume}, ...)
+class Evo2Model:
+    @modal.enter()
+    def load_evo2_model(self):
+        self.model = Evo2("evo2_7b")   # Loaded once, stays in GPU memory
+
+    @modal.fastapi_endpoint(method="POST")
+    def analyze_single_variant(self, request: VariantRequest):
+        # Fetch sequence → Score → Return prediction
+```
+
+### 3. Scoring Logic
+```python
+delta_score = var_score - ref_score
+
+threshold   = -0.0009178519   # Optimal threshold from BRCA1 ROC
+lof_std     =  0.0015140239   # Std dev of loss-of-function scores
+func_std    =  0.0009016589   # Std dev of functional scores
+
+if delta_score < threshold:
+    prediction = "Likely pathogenic"
+    confidence = min(1.0, abs(delta_score - threshold) / lof_std)
+else:
+    prediction = "Likely benign"
+    confidence = min(1.0, abs(delta_score - threshold) / func_std)
+```
+
+---
+
+## ⚙️ Setup & Deployment
 
 ### Requirements
+- Python 3.10+ (locally for Modal CLI)
+- Modal account — https://modal.com
+- HuggingFace account — https://huggingface.co
 
-Evo 2 is based on [StripedHyena 2](https://github.com/Zymrael/vortex) which requires python>=3.11. Evo 2 uses [Transformer Engine](https://github.com/NVIDIA/TransformerEngine) FP8 for some layers which requires an H100 (or other GPU with compute capability ≥8.9). We are actively investigating ways to avoid this requirement.
-
-### Installation
-
-To install Evo 2 for inference or generation, please clone and install from GitHub. We recommend using a new conda environment with python>=3.11.
+### Steps
 
 ```bash
-git clone --recurse-submodules git@github.com:ArcInstitute/evo2.git
-cd evo2
-pip install .
+# 1. Create and activate virtual environment
+python -m venv venv
+.\venv\Scripts\activate        # Windows
+source venv/bin/activate       # Mac/Linux
+
+# 2. Install dependencies
+pip install -r requirements.txt
+pip install modal
+
+# 3. Authenticate with Modal
+modal setup
+
+# 4. Add HuggingFace token to Modal secrets
+modal secret create huggingface-secret HF_TOKEN=hf_your_token_here
+
+# 5. Test run (builds image + runs once)
+modal run main.py
+
+# 6. Deploy to production
+modal deploy main.py
 ```
 
-If this did not work for whatever reason, you can also install from [Vortex](https://github.com/Zymrael/vortex) and follow the instructions there. PyPi support coming soon!
-
-You can check that the installation was correct by running a test.
-
+### Expected Output After Deploy
 ```
-python ./test/test_evo2.py --model_name evo2_7b
+✓ Created web endpoint for Evo2Model.analyze_single_variant
+https://your-username--genome-analysis-v2-evo2model-analyze-single-variant.modal.run
 ```
 
-## Checkpoints
+---
 
-We provide the following model checkpoints, hosted on [HuggingFace](https://huggingface.co/arcinstitute):
-| Checkpoint Name                        | Description |
-|----------------------------------------|-------------|
-| `evo2_40b`  | A model pretrained with 1 million context obtained through context extension of `evo2_40b_base`.|
-| `evo2_7b`  | A model pretrained with 1 million context obtained through context extension of `evo2_7b_base`.|
-| `evo2_40b_base`  | A model pretrained with 8192 context length.|
-| `evo2_7b_base`  | A model pretrained with 8192 context length.|
-| `evo2_1b_base`  | A smaller model pretrained with 8192 context length.|
+## 🕐 Performance Characteristics
 
-To use Evo 2 40B, you will need multiple GPUs. Vortex automatically handles device placement, splitting the model across available cuda devices.
+| Request Type | Time |
+|---|---|
+| First ever request (downloads 15GB weights) | ~10-15 min |
+| Cold start (weights cached, model loading) | ~30-60 sec |
+| Warm request (container already running) | ~3-5 sec |
 
-## Usage
+---
 
-Below are simple examples of how to download Evo 2 and use it locally in Python.
-
-### Forward
-
-Evo 2 can be used to score the likelihoods across a DNA sequence.
-
-```python
-import torch
-from evo2 import Evo2
-
-evo2_model = Evo2('evo2_7b')
-
-sequence = 'ACGT'
-input_ids = torch.tensor(
-    evo2_model.tokenizer.tokenize(sequence),
-    dtype=torch.int,
-).unsqueeze(0).to('cuda:0')
-
-outputs, _ = evo2_model(input_ids)
-logits = outputs[0]
-
-print('Logits: ', logits)
-print('Shape (batch, length, vocab): ', logits.shape)
-```
-
-### Embeddings
-
-Evo 2 embeddings can be saved for use downstream. We find that intermediate embeddings work better than final embeddings, see our paper for details.
-
-```python
-import torch
-from evo2 import Evo2
-
-evo2_model = Evo2('evo2_7b')
-
-sequence = 'ACGT'
-input_ids = torch.tensor(
-    evo2_model.tokenizer.tokenize(sequence),
-    dtype=torch.int,
-).unsqueeze(0).to('cuda:0')
-
-layer_name = 'blocks.28.mlp.l3'
-
-outputs, embeddings = evo2_model(input_ids, return_embeddings=True, layer_names=[layer_name])
-
-print('Embeddings shape: ', embeddings[layer_name].shape)
-```
-
-### Generation
-
-Evo 2 can generate DNA sequences based on prompts.
-
-```python
-from evo2 import Evo2
-
-evo2_model = Evo2('evo2_7b')
-
-output = evo2_model.generate(prompt_seqs=["ACGT"], n_tokens=400, temperature=1.0, top_k=4)
-
-print(output.sequences[0])
-```
-
-### Notebooks
-
-We provide example notebooks.
-
-The [BRCA1 notebook](https://github.com/ArcInstitute/evo2/blob/main/notebooks/brca1/brca1_zero_shot_vep.ipynb) shows zero-shot *BRCA1* variant effect prediction. This example includes a walkthrough of:
-- Performing zero-shot *BRCA1* variant effect predictions using Evo 2
-- Reference vs alternative allele normalization
-
-The [generation notebook](https://github.com/ArcInstitute/evo2/blob/main/notebooks/generation/generation_notebook.ipynb) shows DNA sequence completion with Evo 2. This example shows:
-- DNA prompt based generation and 'DNA autocompletion'
-- How to get and prompt using phylogenetic species tags for generation
-
-### Nvidia NIM
-
-Evo 2 is available on [Nvidia NIM](https://catalog.ngc.nvidia.com/containers?filters=&orderBy=scoreDESC&query=evo2&page=&pageSize=) and [hosted API](https://build.nvidia.com/arc/evo2-40b).
-
-- [Documentation](https://docs.nvidia.com/nim/bionemo/evo2/latest/overview.html)
-- [Quickstart](https://docs.nvidia.com/nim/bionemo/evo2/latest/quickstart-guide.html)
-
-The quickstart guides users through running Evo 2 on the NVIDIA NIM using a python or shell client after starting NIM. An example python client script is shown below. This is the same way you would interact with the [Nvidia hosted API](https://build.nvidia.com/arc/evo2-40b?snippet_tab=Python).
-
-```python
-#!/usr/bin/env python3
-import requests
-import os
-import json
-from pathlib import Path
-
-key = os.getenv("NVCF_RUN_KEY") or input("Paste the Run Key: ")
-
-r = requests.post(
-    url=os.getenv("URL", "https://health.api.nvidia.com/v1/biology/arc/evo2-40b/generate"),
-    headers={"Authorization": f"Bearer {key}"},
-    json={
-        "sequence": "ACTGACTGACTGACTG",
-        "num_tokens": 8,
-        "top_k": 1,
-        "enable_sampled_probs": True,
-    },
-)
-
-if "application/json" in r.headers.get("Content-Type", ""):
-    print(r, "Saving to output.json:\n", r.text[:200], "...")
-    Path("output.json").write_text(r.text)
-elif "application/zip" in r.headers.get("Content-Type", ""):
-    print(r, "Saving large response to data.zip")
-    Path("data.zip").write_bytes(r.content)
-else:
-    print(r, r.headers, r.content)
-```
-
-
-### Very long sequences
-
-We are actively working on optimizing performance for long sequence processing in Vortex. Vortex can currently compute over very long sequences via teacher prompting. However please note that forward pass on long sequences may currently be slow. You can instead use [Savanna](https://github.com/Zymrael/savanna) or [Nvidia BioNemo](https://github.com/NVIDIA/bionemo-framework) for embedding long sequences.
-
-### Dataset
-
-The OpenGenome2 dataset used for pretraining Evo2 is available on [HuggingFace ](https://huggingface.co/datasets/arcinstitute/opengenome2). Data is available either as raw fastas or as JSONL files which include preprocessing and data augmentation.
-
-### Training and Finetuning
-
-Evo 2 was trained using [Savanna](https://github.com/Zymrael/savanna), an open source framework for training alternative architectures.
-
-To train or finetune Evo 2, you can use [Savanna](https://github.com/Zymrael/savanna) or [Nvidia BioNemo](https://github.com/NVIDIA/bionemo-framework) which provides a [Evo 2 finetuning tutorial here](https://github.com/NVIDIA/bionemo-framework/blob/ca16c2acf9bf813d020b6d1e2d4e1240cfef6a69/docs/docs/user-guide/examples/bionemo-evo2/fine-tuning-tutorial.ipynb).
-
-## Citation
-
-If you find these models useful for your research, please cite the relevant papers
+## 📦 Dependencies
 
 ```
-@article {Brixi2025.02.18.638918,
-	author = {Brixi, Garyk and Durrant, Matthew G and Ku, Jerome and Poli, Michael and Brockman, Greg and Chang, Daniel and Gonzalez, Gabriel A and King, Samuel H and Li, David B and Merchant, Aditi T and Naghipourfar, Mohsen and Nguyen, Eric and Ricci-Tam, Chiara and Romero, David W and Sun, Gwanggyu and Taghibakshi, Ali and Vorontsov, Anton and Yang, Brandon and Deng, Myra and Gorton, Liv and Nguyen, Nam and Wang, Nicholas K and Adams, Etowah and Baccus, Stephen A and Dillmann, Steven and Ermon, Stefano and Guo, Daniel and Ilango, Rajesh and Janik, Ken and Lu, Amy X and Mehta, Reshma and Mofrad, Mohammad R.K. and Ng, Madelena Y and Pannu, Jaspreet and Re, Christopher and Schmok, Jonathan C and St. John, John and Sullivan, Jeremy and Zhu, Kevin and Zynda, Greg and Balsam, Daniel and Collison, Patrick and Costa, Anthony B. and Hernandez-Boussard, Tina and Ho, Eric and Liu, Ming-Yu and McGrath, Tom and Powell, Kimberly and Burke, Dave P. and Goodarzi, Hani and Hsu, Patrick D and Hie, Brian},
-	title = {Genome modeling and design across all domains of life with Evo 2},
-	elocation-id = {2025.02.18.638918},
-	year = {2025},
-	doi = {10.1101/2025.02.18.638918},
-	publisher = {Cold Spring Harbor Laboratory},
-	URL = {https://www.biorxiv.org/content/early/2025/02/21/2025.02.18.638918},
-	eprint = {https://www.biorxiv.org/content/early/2025/02/21/2025.02.18.638918.full.pdf},
-	journal = {bioRxiv}
+fastapi[standard]     - REST API framework
+modal                 - Serverless GPU deployment
+matplotlib            - Plotting (BRCA1 analysis)
+pandas                - Data manipulation
+seaborn               - Statistical visualization
+scikit-learn          - ROC/AUROC metrics
+openpyxl              - Excel file reading
+biopython             - Bioinformatics utilities
+huggingface_hub       - Model weight downloads
+requests              - HTTP client
+pydantic              - Request validation
+```
+
+---
+
+## 🔌 API Reference
+
+### POST `/`
+
+Analyzes a single nucleotide variant and predicts pathogenicity.
+
+**Request Body:**
+```json
+{
+  "variant_position": 43119628,
+  "alternative": "G",
+  "genome": "hg38",
+  "chromosome": "chr17"
 }
 ```
+
+**Response:**
+```json
+{
+  "position": 43119628,
+  "reference": "T",
+  "alternative": "G",
+  "delta_score": -0.001234,
+  "prediction": "Likely pathogenic",
+  "classification_confidence": 0.87
+}
+```
+
+---
+
+## 📊 Model Information
+
+| Property | Value |
+|---|---|
+| Model | EVO2 7B |
+| Parameters | 7 Billion |
+| Architecture | StripedHyena 2 |
+| Context Window | 1M base pairs (8192bp used for SNV scoring) |
+| Training Data | OpenGenome2 (8.8T tokens) |
+| GPU Required | H100 (Compute Capability ≥ 8.9) |
+| License | Apache 2.0 |
