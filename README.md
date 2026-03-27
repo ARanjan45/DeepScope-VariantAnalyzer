@@ -213,6 +213,11 @@ deepscope/
 
 ---
 
+
+## Results - Comparison of hg-38-Dec2013[(Genome: BRCA1 protein variant), (Variant: NM_006768.5(BRAP):c.1321A>T (p.Met441Leu))]
+
+![Result](./result.png)
+
 ## 🧪 How to Use
 
 1. **Select Genome Assembly** — choose `hg38` (human genome, latest)
